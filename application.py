@@ -59,7 +59,7 @@ class Models:
 app = Flask(__name__)
 
 
-@app.route("/health", methods=["GET"])
+@app.route("/", methods=["GET"])
 def health_check():
     return jsonify({"status": "healthy", "timestamp": int(time.time())}), 200
 
