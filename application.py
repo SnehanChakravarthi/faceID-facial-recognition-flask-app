@@ -59,6 +59,11 @@ class Models:
 app = Flask(__name__)
 
 
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "healthy", "timestamp": int(time.time())}), 200
+
+
 @app.route("/api/v1/enroll", methods=["POST"])
 def enroll():
     # Log the headers for debugging
