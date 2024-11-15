@@ -1,7 +1,7 @@
 import logging
 import os
 from deepface import DeepFace
-from config import Settings
+from ..config import Settings
 
 
 def check_anti_spoofing(image_path):

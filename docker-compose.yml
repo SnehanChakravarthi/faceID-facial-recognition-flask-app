@@ -6,5 +6,5 @@ services:
     volumes:
       - .:/app
     ports:
-      - '5000:5000'
-    command: gunicorn -w 4 -b 0.0.0.0:5000 application:app
+      - '8787:8787'
+    command: gunicorn -w 4 -b 0.0.0.0:8787 "src.main:create_face_id_service()"

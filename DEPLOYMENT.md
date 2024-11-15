@@ -13,7 +13,7 @@ docker build -t face-id-api:latest .
 ```bash
 docker run -d \
   --name face-id-api \
-  -p 5000:5000 \
+  -p 8787:8787 \
   -e PINECONE_API_KEY=${PINECONE_API_KEY} \
   face-id-api:latest
 ```
@@ -63,7 +63,7 @@ pip install --no-cache-dir -r requirements.txt
 4. Run with Gunicorn:
 
 ```bash
-gunicorn -w 4 -b 0.0.0.0:5000 application:app
+gunicorn -w 4 -b 0.0.0.0:8787 src.main:create_face_id_service()
 ```
 
 ## Security Considerations

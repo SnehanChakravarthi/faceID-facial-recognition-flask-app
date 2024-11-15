@@ -1,7 +1,7 @@
 import logging
 import os
 import uuid
-from config import Config
+from ..config import Config
 
 
 def save_image_temporarily(image_file):

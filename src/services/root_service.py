@@ -1,9 +1,8 @@
 import logging
 import os
 import time
-from deepface import DeepFace
-from config import Models, Settings
-from utils import PineconeService as Pinecone
+from ..config import Models, Settings
+from ..utils import PineconeService as Pinecone
 from flask import jsonify
 
 

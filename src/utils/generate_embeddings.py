@@ -2,7 +2,7 @@ import logging
 import os
 import numpy as np
 from deepface import DeepFace
-from config import Settings
+from ..config import Settings
 
 
 def generate_embeddings(image_path):

@@ -3,7 +3,7 @@ import time
 import uuid
 import numpy as np
 from pinecone import Pinecone, ServerlessSpec
-from config import Config, Settings
+from ..config import Config, Settings
 
 
 class PineconeService:

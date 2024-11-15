@@ -3,8 +3,8 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from flask import jsonify
-from utils import process_face_image
-from utils import PineconeService
+from ..utils import process_face_image
+from ..utils import PineconeService
 
 
 def handle_enrollment_request(request):

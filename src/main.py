@@ -1,6 +1,11 @@
+import os
 import logging
 from flask import Flask
-from api import register_routes
+
+# Set DeepFace home directory to a writable location before importing DeepFace
+os.environ["DEEPFACE_HOME"] = "/tmp/.deepface"
+
+from .api import register_routes
 
 # Configure logging
 logging.basicConfig(
@@ -9,7 +14,7 @@ logging.basicConfig(
 )
 
 
-def create_face_id_api(config_object=None):
+def create_face_id_service(config_object=None):
     """Create and configure the Flask application.
 
     Args:
@@ -32,8 +37,8 @@ def create_face_id_api(config_object=None):
 
 def main():
     """Run the application in development mode."""
-    app = create_face_id_api()
-    app.run(host="0.0.0.0", port=5000)
+    app = create_face_id_service()
+    app.run(host="0.0.0.0", port=8787)
 
 
 if __name__ == "__main__":

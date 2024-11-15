@@ -2,9 +2,9 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from flask import jsonify
-from config import Settings
-from utils import process_face_image
-from utils import PineconeService
+from ..config import Settings
+from ..utils import process_face_image
+from ..utils import PineconeService
 
 
 def handle_authenticate_request(request):

@@ -72,13 +72,13 @@ export PINECONE_API_KEY=your_pinecone_api_key
 
 ```bash
 docker build -t face-id-api .
-docker run -p 5000:5000 -e PINECONE_API_KEY=${PINECONE_API_KEY} face-id-api
+docker run -p 8787:8787 -e PINECONE_API_KEY=${PINECONE_API_KEY} face-id-api
 ```
 
 4. Test the API:
 
 ```bash
-curl http://localhost:5000/health
+curl http://localhost:8787/health
 ```
 
 ## Configuration
