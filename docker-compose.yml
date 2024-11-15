@@ -6,5 +6,5 @@ services:
     volumes:
       - .:/app
     ports:
-      - "2000:5000"
+      - '5000:5000'
     command: gunicorn -w 4 -b 0.0.0.0:5000 application:app

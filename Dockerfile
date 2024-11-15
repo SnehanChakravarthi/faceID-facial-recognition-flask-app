@@ -20,16 +20,6 @@ RUN apt-get update && \
     ffmpeg libsm6 hdf5-tools libhdf5-dev libhdf5-serial-dev wget libxext6 && \
     rm -rf /var/lib/apt/lists/*
 
-# Install system dependencies required for OpenCV and other packages
-# RUN apt-get update && apt-get install -y \
-#     libgl1-mesa-glx \
-#     libglib2.0-0 \
-#     pkg-config \
-#     libhdf5-dev \
-#     libhdf5-serial-dev \
-#     && rm -rf /var/lib/apt/lists/*
-
-# RUN apt-get update && apt-get install ffmpeg libsm6  hdf5-tools libhdf5-dev libhdf5-serial-dev libxext6 -y
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip && \

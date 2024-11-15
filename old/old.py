@@ -26,7 +26,7 @@ class Config:
     TEMP_IMAGE_PATH = "/path/to/temp/images"
     ALLOWED_IMAGE_EXTENSIONS = {"png", "jpg", "jpeg"}
     MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
-    # MAX_CONTENT_LENGTH = 16 * 1024 * 1024
+    MAX_CONTENT_LENGTH = 16 * 1024 * 1024
     # CONTENT_TYPE = "multipart/form-data"
 
 
