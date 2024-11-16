@@ -1,9 +1,74 @@
 import logging
+import threading
 import time
 import uuid
+from dataclasses import dataclass
+from typing import Dict, Optional, Union
+
 import numpy as np
 from pinecone import Pinecone, ServerlessSpec
+
 from ..config import Config, Settings
+
+
+class SearchCodes:
+    SUCCESS = 0
+    VALIDATION_ERROR = 1
+    NO_MATCHES = 5
+    BELOW_THRESHOLD = 6
+    UNEXPECTED_ERROR = 7
+
+
+class StoreEmbeddingsCodes:
+    SUCCESS = 0
+    VALIDATION_ERROR = 1
+    UNEXPECTED_ERROR = 3
+
+
+class SearchMessages:
+    SUCCESS = "Match found successfully"
+    NO_MATCHES = "No matches found in database"
+    BELOW_THRESHOLD = "No matches found above threshold"
+    VALIDATION_ERROR = "Invalid input parameters"
+    UNEXPECTED_ERROR = "Unexpected error during search"
+
+
+class StoreEmbeddingsMessages:
+    SUCCESS = "Embeddings stored successfully"
+    VALIDATION_ERROR = "Invalid input parameters"
+    UNEXPECTED_ERROR = "Unexpected error during embedding storage"
+
+
+@dataclass
+class SearchResponse:
+    code: int
+    match: Optional[dict] = None
+    message: Optional[str] = None
+    details: Optional[dict] = None
+
+    def to_dict(self) -> Dict[str, Union[int, dict, str, None]]:
+        return {
+            "code": self.code,
+            "match": self.match,
+            "message": self.message,
+            "details": self.details,
+        }
+
+
+@dataclass
+class StoreEmbeddingsResponse:
+    code: int
+    message: Optional[str] = None
+    vectors_stored: Optional[int] = None
+    processing_time: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Union[int, str, int, float, None]]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "vectors_stored": self.vectors_stored,
+            "processing_time": self.processing_time,
+        }
 
 
 class PineconeService:
@@ -17,29 +82,39 @@ class PineconeService:
         batch_size (int): Size of batches for vector upsert operations
     """
 
-    def __init__(self, api_key=None):
-        """
-        Initialize PineconeService with configuration.
+    _instance = None
+    _lock = threading.Lock()
 
-        Args:
-            api_key (str, optional): Pinecone API key. Defaults to Config.PINECONE_API_KEY
+    def __new__(cls, api_key=None, pc_instance=None):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
 
-        Raises:
-            ValueError: If API key is not provided or invalid
-        """
+    def __init__(self, api_key=None, pc_instance=None):
+        if self._initialized:
+            return
+
         self.dimension = 512  # ArcFace embedding dimension
         self.batch_size = 100
         self.index_name = "deepface-embeddings"
 
-        if not api_key and not Config.PINECONE_API_KEY:
-            raise ValueError("Pinecone API key is required")
+        if pc_instance:
+            self.pc = pc_instance
+        else:
+            if not api_key and not Config.PINECONE_API_KEY:
+                raise ValueError("Pinecone API key is required")
 
-        try:
-            self.pc = Pinecone(api_key=api_key or Config.PINECONE_API_KEY)
-            self.ensure_index_exists()
-        except Exception as e:
-            logging.error("Failed to initialize Pinecone client: %s", str(e))
-            raise
+            try:
+                self.pc = Pinecone(api_key=api_key or Config.PINECONE_API_KEY)
+                self.ensure_index_exists()
+            except Exception as e:
+                logging.error("Failed to initialize Pinecone client: %s", str(e))
+                raise
+
+        self._initialized = True
 
     def ensure_index_exists(self):
         """
@@ -97,15 +172,22 @@ class PineconeService:
             RuntimeError: If Pinecone operations fail
         """
         start_time = time.time()
-
-        # Input validation
-        if not all([id, firstName, lastName]):
-            raise ValueError("ID, first name, and last name are required")
-
-        if not embeddings or not isinstance(embeddings, list):
-            raise ValueError("Valid embeddings list is required")
+        vectors_stored = 0
 
         try:
+            # Input validation
+            if not all([id, firstName, lastName]):
+                return StoreEmbeddingsResponse(
+                    code=StoreEmbeddingsCodes.VALIDATION_ERROR,
+                    message=f"{StoreEmbeddingsMessages.VALIDATION_ERROR}: ID, first name, and last name are required",
+                ).to_dict()
+
+            if not embeddings or not isinstance(embeddings, list):
+                return StoreEmbeddingsResponse(
+                    code=StoreEmbeddingsCodes.VALIDATION_ERROR,
+                    message=f"{StoreEmbeddingsMessages.VALIDATION_ERROR}: Valid embeddings list is required",
+                ).to_dict()
+
             index = self.pc.Index(self.index_name)
             vectors = []
             timestamp = int(time.time())
@@ -114,9 +196,10 @@ class PineconeService:
             for i, embedding in enumerate(embeddings):
                 # Validate embedding dimension
                 if len(embedding) != self.dimension:
-                    raise ValueError(
-                        f"Invalid embedding dimension: expected {self.dimension}, got {len(embedding)}"
-                    )
+                    return StoreEmbeddingsResponse(
+                        code=StoreEmbeddingsCodes.VALIDATION_ERROR,
+                        message=f"{StoreEmbeddingsMessages.VALIDATION_ERROR}: Invalid embedding dimension: expected {self.dimension}, got {len(embedding)}",
+                    ).to_dict()
 
                 # Generate unique vector ID
                 vector_id = f"{firstName.lower().replace(' ', '-')}-{lastName.lower().replace(' ', '-')}-{uuid.uuid4()}"
@@ -142,7 +225,6 @@ class PineconeService:
 
             # Upsert vectors in batches
             total_vectors = len(vectors)
-            vectors_stored = 0
 
             for i in range(0, total_vectors, self.batch_size):
                 batch = vectors[i : i + self.batch_size]
@@ -156,33 +238,27 @@ class PineconeService:
                 )
 
             processing_time = time.time() - start_time
-
             success_message = (
                 f"Successfully stored {vectors_stored} embeddings for {firstName} {lastName} "
                 f"in {processing_time:.2f} seconds"
             )
             logging.info(success_message)
 
-            return {
-                "success": True,
-                "message": success_message,
-                "vectors_stored": vectors_stored,
-                "processing_time": round(processing_time, 3),
-            }
-
-        except ValueError as ve:
-            error_msg = f"Validation error in store_embeddings: {str(ve)}"
-            logging.error(error_msg)
-            return {"success": False, "error": error_msg, "vectors_stored": 0}
+            return StoreEmbeddingsResponse(
+                code=StoreEmbeddingsCodes.SUCCESS,
+                message=success_message,
+                vectors_stored=vectors_stored,
+                processing_time=round(processing_time, 3),
+            ).to_dict()
 
         except Exception as e:
-            error_msg = f"Failed to store embeddings: {str(e)}"
+            error_msg = f"{StoreEmbeddingsMessages.UNEXPECTED_ERROR}: {str(e)}"
             logging.exception(error_msg)
-            return {
-                "success": False,
-                "error": error_msg,
-                "vectors_stored": vectors_stored if "vectors_stored" in locals() else 0,
-            }
+            return StoreEmbeddingsResponse(
+                code=StoreEmbeddingsCodes.UNEXPECTED_ERROR,
+                message=error_msg,
+                vectors_stored=vectors_stored,
+            ).to_dict()
 
     def search_similar_faces(self, query_vector, threshold=Settings.MATCH_THRESHOLD):
         """
@@ -207,16 +283,10 @@ class PineconeService:
             RuntimeError: If Pinecone operations fail
         """
         start_time = time.time()
-
-        response = {
-            "success": False,
-            "match": None,
-            "error": None,
-            "details": {
-                "similarity_score": None,
-                "threshold_used": threshold,
-                "processing_time": None,
-            },
+        details = {
+            "similarity_score": None,
+            "threshold_used": threshold,
+            "processing_time": None,
         }
 
         try:
@@ -244,14 +314,21 @@ class PineconeService:
                 include_values=False,
             )
 
+            # Update processing time
+            details["processing_time"] = round(time.time() - start_time, 3)
+
             if not search_result or not search_result["matches"]:
                 logging.warning("No matches found in search results")
-                response["error"] = "No matches found"
-                return response
+                return SearchResponse(
+                    code=SearchCodes.NO_MATCHES,
+                    message=SearchMessages.NO_MATCHES,
+                    details=details,
+                ).to_dict()
 
             # Process the single match
             best_match = search_result["matches"][0]
             similarity_score = round(best_match.get("score", 0), 4)
+            details["similarity_score"] = similarity_score
 
             # Check if match meets threshold
             if similarity_score < threshold:
@@ -260,42 +337,42 @@ class PineconeService:
                     similarity_score,
                     threshold,
                 )
-                response["error"] = f"No matches found above threshold ({threshold})"
-                response["details"]["similarity_score"] = similarity_score
-                return response
+                return SearchResponse(
+                    code=SearchCodes.BELOW_THRESHOLD,
+                    message=f"{SearchMessages.BELOW_THRESHOLD} ({threshold})",
+                    details=details,
+                ).to_dict()
 
-            # Format the match result
-            response.update(
-                {
-                    "success": True,
-                    "match": {
-                        "id": best_match.get("id"),
-                        "score": similarity_score,
-                        "metadata": best_match.get("metadata", {}),
-                    },
-                    "details": {
-                        "similarity_score": similarity_score,
-                        "threshold_used": threshold,
-                        "processing_time": round(time.time() - start_time, 3),
-                    },
-                }
-            )
+            # Format successful match
+            match_data = {
+                "id": best_match.get("id"),
+                "score": similarity_score,
+                "metadata": best_match.get("metadata", {}),
+            }
 
             logging.info(
-                "Face search completed - match_found=True, similarity=%.4f, time=%.3fs",
-                similarity_score,
-                response["details"]["processing_time"],
+                f"Face search completed - match_found=True, similarity={similarity_score}, time={details['processing_time']}s"
             )
-            return response
+
+            return SearchResponse(
+                code=SearchCodes.SUCCESS,
+                match=match_data,
+                message=SearchMessages.SUCCESS,
+                details=details,
+            ).to_dict()
 
         except ValueError as ve:
-            error_msg = f"Validation error in search_similar_faces: {str(ve)}"
+            error_msg = f"{SearchMessages.VALIDATION_ERROR}: {str(ve)}"
             logging.error(error_msg)
-            response["error"] = error_msg
-            return response
+            return SearchResponse(
+                code=SearchCodes.VALIDATION_ERROR,
+                message=error_msg,
+                details=details,
+            ).to_dict()
 
         except Exception as e:
-            error_msg = f"Unexpected error in search_similar_faces: {str(e)}"
+            error_msg = f"{SearchMessages.UNEXPECTED_ERROR}: {str(e)}"
             logging.exception(error_msg)
-            response["error"] = error_msg
-            return response
+            return SearchResponse(
+                code=SearchCodes.UNEXPECTED_ERROR, message=error_msg, details=details
+            ).to_dict()

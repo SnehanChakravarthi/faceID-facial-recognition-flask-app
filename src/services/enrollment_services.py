@@ -1,13 +1,66 @@
 import logging
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
-from flask import jsonify
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple
+
+from flask import Request, jsonify
+
 from ..utils import process_face_image
-from ..utils import PineconeService
 
 
-def handle_enrollment_request(request):
+class EnrollmentCodes:
+    SUCCESS = 0
+    FUNCTION_ERROR = 1
+    NO_FACE_DETECTED = 2
+    MULTIPLE_FACES_DETECTED = 3
+    SPOOFING_DETECTED = 4
+    STORAGE_ERROR = 5
+    UNEXPECTED_ERROR = 6
+
+
+class EnrollmentMessages:
+    SUCCESS = "Enrollment completed successfully"
+    FUNCTION_ERROR = "Unexpected error in enrollment"
+    NO_FACE_DETECTED = "No face detected"
+    MULTIPLE_FACES_DETECTED = "Multiple faces detected"
+    SPOOFING_DETECTED = "Spoofing detected"
+    STORAGE_ERROR = "Failed to store face data"
+    UNEXPECTED_ERROR = "Unexpected error"
+
+
+class EnrollmentError(Exception):
+    """Base exception for enrollment errors"""
+
+    def __init__(self, code: int, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+class EnrollmentValidationError(EnrollmentError):
+    """Raised when validation fails"""
+
+    pass
+
+
+@dataclass
+class EnrollmentResponse:
+    code: int
+    message: Optional[str] = None
+    anti_spoofing: Optional[dict] = None
+    details: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "anti_spoofing": self.anti_spoofing,
+            "details": self.details,
+        }
+
+
+def handle_enrollment_request(request: Request, pinecone_service) -> Tuple[Any, int]:
     """
     Endpoint to enroll a new face in the system.
 
@@ -31,22 +84,6 @@ def handle_enrollment_request(request):
     """
     start_time = time.time()
 
-    response = {
-        "success": False,
-        "message": None,
-        "details": {
-            "processing_times": {
-                "total": None,
-                "face_processing": None,
-                "database_storage": None,
-            },
-            "face_detection": None,
-            "anti_spoofing": None,
-            "embeddings_stored": None,
-        },
-        "error": None,
-    }
-
     try:
         # Request validation
         form_data = request.form
@@ -69,58 +106,40 @@ def handle_enrollment_request(request):
             field for field, value in required_fields.items() if not value
         ]
         if missing_fields:
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "error": f"Missing required fields: {', '.join(missing_fields)}",
-                    }
-                ),
-                400,
+            raise EnrollmentValidationError(
+                EnrollmentCodes.UNEXPECTED_ERROR,
+                EnrollmentMessages.UNEXPECTED_ERROR,
             )
 
-        # Initialize tasks concurrently
-        face_processing_task = None
-        pinecone_service = None
+        # Process face image
+        face_processing_start = time.time()
+        face_processing_task = process_face_image(image_file)
 
-        try:
-            # Start both tasks concurrently using threads
-            face_processing_start = time.time()
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                # Submit both tasks
-                face_processing_future = executor.submit(process_face_image, image_file)
-                pinecone_future = executor.submit(PineconeService)
+        # Check for face processing errors
+        if face_processing_task["code"] != EnrollmentCodes.SUCCESS:
+            response = EnrollmentResponse(
+                code=face_processing_task["code"],
+                message=face_processing_task["message"],
+                anti_spoofing=face_processing_task.get("anti_spoofing"),
+                details={
+                    "processing_times": {
+                        "total": round(time.time() - start_time, 3),
+                        "face_processing": round(
+                            time.time() - face_processing_start, 3
+                        ),
+                        "database_storage": None,
+                    },
+                },
+            )
 
-                # Wait for both tasks to complete
-                face_processing_task = face_processing_future.result()
-                pinecone_service = pinecone_future.result()
+            logging.warning(
+                "Face processing failed during authentication: %s (code=%d)",
+                face_processing_task["message"],
+                face_processing_task["code"],
+            )
+            return jsonify(response.to_dict()), 200
 
-        except ValueError as ve:
-            raise ValueError(f"Initialization error: {str(ve)}")
-        except Exception as e:
-            raise RuntimeError(f"Setup failed: {str(e)}")
-
-        # Validate face processing results
-        if not face_processing_task["success"]:
-            raise ValueError(face_processing_task["error"] or "Face processing failed")
-
-        # try:
-        #     # Start face processing
-        #     face_processing_start = time.time()
-        #     face_processing_task = process_face_image(image_file)
-
-        #     # Initialize Pinecone service while face is being processed
-        #     pinecone_service = PineconeService()
-
-        # except ValueError as ve:
-        #     raise ValueError(f"Initialization error: {str(ve)}")
-        # except Exception as e:
-        #     raise RuntimeError(f"Setup failed: {str(e)}")
-
-        # # Validate face processing results
-        # if not face_processing_task["success"]:
-        #     raise ValueError(face_processing_task["error"] or "Face processing failed")
-
+        # If we reach here, face processing was successful
         face_processing_time = time.time() - face_processing_start
 
         # Store embeddings
@@ -138,28 +157,34 @@ def handle_enrollment_request(request):
 
         storage_time = time.time() - storage_start
 
-        if not storage_result["success"]:
-            raise RuntimeError(f"Database storage failed: {storage_result['error']}")
-
-        # Prepare success response
-        total_time = time.time() - start_time
-
-        response.update(
-            {
-                "success": True,
-                "message": "Enrollment successful",
-                "details": {
+        if storage_result["code"] != EnrollmentCodes.SUCCESS:
+            response = EnrollmentResponse(
+                code=EnrollmentCodes.STORAGE_ERROR,
+                message=storage_result["message"],
+                anti_spoofing=face_processing_task.get("anti_spoofing"),
+                details={
                     "processing_times": {
-                        "total": round(total_time, 3),
+                        "total": round(time.time() - start_time, 3),
                         "face_processing": round(face_processing_time, 3),
                         "database_storage": round(storage_time, 3),
                     },
-                    "face_detection": face_processing_task["details"]["face_detected"],
-                    "anti_spoofing": face_processing_task["details"]["anti_spoofing"],
-                    "embeddings_stored": storage_result["vectors_stored"],
-                    "model_info": face_processing_task["details"]["model_info"],
                 },
-            }
+            )
+            return jsonify(response.to_dict()), 200
+
+        # Prepare success response
+        total_time = time.time() - start_time
+        response = EnrollmentResponse(
+            code=EnrollmentCodes.SUCCESS,
+            message=EnrollmentMessages.SUCCESS,
+            anti_spoofing=face_processing_task.get("anti_spoofing"),
+            details={
+                "processing_times": {
+                    "total": round(total_time, 3),
+                    "face_processing": round(face_processing_time, 3),
+                    "database_storage": round(storage_time, 3),
+                },
+            },
         )
 
         logging.info(
@@ -173,32 +198,26 @@ def handle_enrollment_request(request):
     except ValueError as ve:
         error_msg = str(ve)
         logging.warning("Validation error during enrollment: %s", error_msg)
-        response.update(
-            {
-                "error": error_msg,
-                "details": {**response["details"], "error_type": "validation"},
-            }
-        )
+        response = EnrollmentResponse(
+            code=EnrollmentCodes.FUNCTION_ERROR,
+            message=error_msg,
+        ).to_dict()
         return jsonify(response), 400
 
     except RuntimeError as re:
         error_msg = str(re)
         logging.error("Runtime error during enrollment: %s", error_msg)
-        response.update(
-            {
-                "error": error_msg,
-                "details": {**response["details"], "error_type": "runtime"},
-            }
-        )
+        response = EnrollmentResponse(
+            code=EnrollmentCodes.FUNCTION_ERROR,
+            message=error_msg,
+        ).to_dict()
         return jsonify(response), 500
 
     except Exception as e:
         error_msg = f"Unexpected error during enrollment: {str(e)}"
         logging.exception(error_msg)
-        response.update(
-            {
-                "error": error_msg,
-                "details": {**response["details"], "error_type": "unexpected"},
-            }
-        )
+        response = EnrollmentResponse(
+            code=EnrollmentCodes.UNEXPECTED_ERROR,
+            message=error_msg,
+        ).to_dict()
         return jsonify(response), 500

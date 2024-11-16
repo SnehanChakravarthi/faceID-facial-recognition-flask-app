@@ -1,9 +1,11 @@
 import os
-import logging
-from flask import Flask
 
 # Set DeepFace home directory to a writable location before importing DeepFace
 os.environ["DEEPFACE_HOME"] = "/tmp/.deepface"
+
+import logging
+
+from flask import Flask
 
 from .api import register_routes
 
@@ -38,7 +40,7 @@ def create_face_id_service(config_object=None):
 def main():
     """Run the application in development mode."""
     app = create_face_id_service()
-    app.run(host="0.0.0.0", port=8787)
+    app.run(host="0.0.0.0", port=8787, debug=False)
 
 
 if __name__ == "__main__":

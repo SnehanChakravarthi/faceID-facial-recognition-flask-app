@@ -1,124 +1,176 @@
 import logging
 import os
 import time
-from .save_image_temporarily import save_image_temporarily
+from dataclasses import dataclass
+from typing import Dict, Optional, Union
+
+from werkzeug.datastructures import FileStorage
+
 from .check_anti_spoofing import check_anti_spoofing
 from .generate_embeddings import generate_embeddings
+from .save_image_temporarily import save_image_temporarily
 
 
-def process_face_image(image_file):
+class ProcessFaceImageCodes:
+    SUCCESS = 0
+    FUNCTION_ERROR = 1
+    NO_FACE_DETECTED = 2
+    MULTIPLE_FACES_DETECTED = 3
+    SPOOFING_DETECTED = 4
+
+
+class ProcessFaceImageMessages:
+    SUCCESS = "Image processing completed successfully"
+    FUNCTION_ERROR = "Unexpected error in image processing"
+    NO_FACE_DETECTED = "No face detected in image"
+    MULTIPLE_FACES_DETECTED = "Multiple faces detected - only one face allowed"
+    SPOOFING_DETECTED = "Spoofing detected - only live people allowed"
+
+
+class ProcessFaceImageError(Exception):
+    """Base exception for image processing errors"""
+
+    def __init__(self, code: int, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+class ProcessFaceImageValidationError(ProcessFaceImageError):
+    """Raised when validation fails"""
+
+    pass
+
+
+@dataclass
+class ProcessFaceImageResponse:
+    code: int
+    message: Optional[str] = None
+    anti_spoofing: Optional[dict] = None
+    embeddings: Optional[list] = None
+    processing_time: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Union[int, str, dict, list, float, None]]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "anti_spoofing": self.anti_spoofing,
+            "embeddings": self.embeddings,
+            "processing_time": self.processing_time,
+        }
+
+
+def process_face_image(
+    image_file: FileStorage,
+) -> Dict[str, Union[int, str, dict, list, float, None]]:
     """
-    Process an uploaded face image through multiple steps:
-    1. Save image temporarily
-    2. Perform anti-spoofing check
-    3. Generate face embeddings
+    Execute a series of operations on an uploaded face image:
+    1. Temporarily store the image
+    2. Conduct an anti-spoofing verification
+    3. Create facial embeddings
 
-    Args:
-        image_file: FileStorage object from Flask's request.files
+    Parameters:
+        image_file: A FileStorage instance from Flask's request.files
 
     Returns:
-        dict: A response containing:
-            - success (bool): Overall success status
-            - embeddings (list|None): Generated face embeddings if successful
-            - error (str|None): Error message if any
-            - details (dict): Processing details including:
-                - anti_spoofing (dict): Anti-spoofing check results
-                - temp_path (str): Temporary file path
-                - face_detected (bool): Whether a face was detected
-                - model_info (dict): Model information
-                - processing_time (float): Total processing time in seconds
+        dict: A structured response containing:
+            - code (int): Status code indicating the result of processing
+            - message (str): Description of the processing result
+            - anti_spoofing (dict|None): Results from anti-spoofing verification including:
+                - is_real (bool): Whether the image is of a real person
+                - antispoof_score (float): Anti-spoofing confidence score
+                - confidence (float): Overall confidence in the assessment
+            - embeddings (list|None): The generated face embeddings if successful
+            - processing_time (float): Total processing time in seconds
 
     Raises:
-        ValueError: For validation errors
-        IOError: For file handling errors
+        ProcessFaceImageError: Base exception for image processing errors
+        ProcessFaceImageValidationError: Raised when validation fails
     """
     start_time = time.time()
-
-    response = {
-        "success": False,
-        "embeddings": None,
-        "error": None,
-        "details": {
-            "anti_spoofing": None,
-            "temp_path": None,
-            "face_detected": False,
-            "model_info": None,
-            "processing_time": None,
-        },
-    }
-
     temp_image_path = None
 
     try:
         # Step 1: Save image temporarily
         logging.info("Starting image processing pipeline")
-        try:
-            temp_image_path = save_image_temporarily(image_file)
-            response["details"]["temp_path"] = temp_image_path
-            logging.debug("Image saved temporarily at: %s", temp_image_path)
-        except (ValueError, IOError) as e:
-            raise ValueError(f"Failed to save image: {str(e)}")
+        save_result = save_image_temporarily(image_file)
+
+        if save_result["code"] != 0:  # Any non-success code
+            raise ProcessFaceImageError(
+                ProcessFaceImageCodes.FUNCTION_ERROR,
+                save_result["message"],
+            )
+
+        temp_image_path = save_result["path"]
+        logging.debug("Image saved temporarily at: %s", temp_image_path)
 
         # Step 2: Perform anti-spoofing check
         logging.debug("Initiating anti-spoofing check")
         anti_spoofing_result = check_anti_spoofing(temp_image_path)
-        response["details"]["anti_spoofing"] = anti_spoofing_result
-        response["details"]["face_detected"] = anti_spoofing_result.get(
-            "face_detected", False
-        )
 
-        if not anti_spoofing_result["success"]:
-            raise ValueError(
-                f"Anti-spoofing check failed: {anti_spoofing_result['error']}"
-            )
+        spoof_code = anti_spoofing_result.get("code")
+        if spoof_code != 0:  # Any non-success code
+            # For spoofing detection (code 4), include the anti-spoofing details
+            anti_spoofing_details = {
+                "is_real": anti_spoofing_result.get("is_real"),
+                "antispoof_score": anti_spoofing_result.get("antispoof_score"),
+                "confidence": anti_spoofing_result.get("confidence"),
+            }
 
-        if not anti_spoofing_result["is_real"]:
-            raise ValueError(
-                f"Potential spoofing detected - confidence: {anti_spoofing_result['confidence']}, "
-                f"score: {anti_spoofing_result['antispoof_score']}"
-            )
+            return ProcessFaceImageResponse(
+                code=spoof_code,
+                message=anti_spoofing_result.get("message"),
+                anti_spoofing=anti_spoofing_details,
+                processing_time=round(time.time() - start_time, 3),
+            ).to_dict()
+
+        # Continue with the rest of the processing if anti-spoofing check passed
+        logging.debug("Anti-spoofing check passed successfully")
 
         # Step 3: Generate embeddings
         logging.debug("Generating face embeddings")
         embedding_result = generate_embeddings(temp_image_path)
 
-        if not embedding_result["success"]:
-            raise ValueError(
-                f"Failed to generate embeddings: {embedding_result['error']}"
+        # Get the embedding code
+        embedding_code = embedding_result.get("code")
+
+        if embedding_code != 0:
+            raise ProcessFaceImageValidationError(
+                embedding_code,
+                embedding_result.get(
+                    "message", ProcessFaceImageMessages.FUNCTION_ERROR
+                ),
             )
 
-        # Update response with embedding results
-        response.update(
-            {
-                "success": True,
-                "embeddings": embedding_result["embeddings"],
-                "details": {
-                    **response["details"],
-                    "model_info": embedding_result["model_info"],
-                    "face_detected": embedding_result["face_detected"],
-                },
-            }
-        )
+        # Success case
+        return ProcessFaceImageResponse(
+            code=ProcessFaceImageCodes.SUCCESS,
+            message=ProcessFaceImageMessages.SUCCESS,
+            anti_spoofing={
+                "is_real": anti_spoofing_result.get("is_real"),
+                "antispoof_score": anti_spoofing_result.get("antispoof_score"),
+                "confidence": anti_spoofing_result.get("confidence"),
+            },
+            embeddings=embedding_result.get("embeddings"),
+            processing_time=round(time.time() - start_time, 3),
+        ).to_dict()
 
-        processing_time = time.time() - start_time
-        response["details"]["processing_time"] = round(processing_time, 3)
-
-        logging.info(
-            "Image processing completed successfully in %.3f seconds", processing_time
-        )
-        return response
-
-    except ValueError as ve:
-        error_msg = f"Validation error in process_face_image: {str(ve)}"
-        logging.warning(error_msg)
-        response["error"] = str(ve)
-        return response
+    except ProcessFaceImageError as e:
+        # Simply return the error response without the unnecessary attribute check
+        return ProcessFaceImageResponse(
+            code=e.code,
+            message=e.message,
+            anti_spoofing=None,
+            processing_time=round(time.time() - start_time, 3),
+        ).to_dict()
 
     except Exception as e:
-        error_msg = f"Unexpected error in process_face_image: {str(e)}"
-        logging.exception(error_msg)
-        response["error"] = f"Failed to process image: {str(e)}"
-        return response
+        logging.exception("Unexpected error in process_face_image")
+        return ProcessFaceImageResponse(
+            code=ProcessFaceImageCodes.FUNCTION_ERROR,
+            message=f"{ProcessFaceImageMessages.FUNCTION_ERROR}: {str(e)}",
+            processing_time=round(time.time() - start_time, 3),
+        ).to_dict()
 
     finally:
         # Clean up temporary file

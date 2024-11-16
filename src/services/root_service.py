@@ -1,9 +1,10 @@
 import logging
 import os
 import time
-from ..config import Models, Settings
-from ..utils import PineconeService as Pinecone
+
 from flask import jsonify
+
+from ..config import Models, Settings
 
 
 def handle_root_request():
