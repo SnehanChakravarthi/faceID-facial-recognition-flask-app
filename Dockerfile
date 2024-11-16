@@ -6,6 +6,7 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 
 # Set environment variables
 ENV PINECONE_API_KEY=pcsk_21QGgS_D3c8eXnTkUjzwdyb2hpH2KkcyP45vL6zPg3KkmVrgJov4uBrgM1rmJ8WisC1CLK
+ENV MPLCONFIGDIR="/tmp/matplotlib"  
 
 # Set the working directory inside the container
 WORKDIR /app
@@ -47,7 +48,9 @@ COPY . .
 # Change ownership of the application files and DeepFace directory
 RUN chown -R appuser:appuser /app && \
     chown -R appuser:appuser /tmp/.deepface && \
-    chmod -R 755 /tmp/.deepface
+    chmod -R 755 /tmp/.deepface && \
+    mkdir -p /tmp/matplotlib && \
+    chown -R appuser:appuser /tmp/matplotlib
 
 # Switch to non-root user
 USER appuser

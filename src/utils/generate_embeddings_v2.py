@@ -9,19 +9,21 @@ from deepface import DeepFace
 from ..config import Settings
 
 
-class EmbeddingCodes:
+class EmbeddingCodesV2:
     SUCCESS = 0
     FUNCTION_ERROR = 1
     NO_FACE_DETECTED = 2
+    SPOOF_DETECTED = 3
 
 
-class EmbeddingMessages:
+class EmbeddingMessagesV2:
     SUCCESS = "Embedding generation completed successfully"
     FUNCTION_ERROR = "Unexpected error in embedding generation"
     NO_FACE_DETECTED = "No face detected"
+    SPOOF_DETECTED = "Spoof detected in the given image"
 
 
-class EmbeddingError(Exception):
+class EmbeddingErrorV2(Exception):
     """Base exception for embedding generation errors"""
 
     def __init__(self, code: int, message: str):
@@ -30,7 +32,7 @@ class EmbeddingError(Exception):
         super().__init__(message)
 
 
-class EmbeddingValidationError(EmbeddingError):
+class EmbeddingValidationErrorV2(EmbeddingErrorV2):
     """Raised when validation fails"""
 
     pass
@@ -52,10 +54,11 @@ expected_dims = {
 
 
 @dataclass
-class EmbeddingResponse:
+class EmbeddingResponseV2:
     code: int
     embeddings: Optional[List[List[float]]] = None
     face_detected: bool = False
+    is_real: bool = False
     model_info: Dict[str, Any] = None
     message: Optional[str] = None
 
@@ -64,12 +67,13 @@ class EmbeddingResponse:
             "code": self.code,
             "embeddings": self.embeddings,
             "face_detected": self.face_detected,
+            "is_real": self.is_real,
             "model_info": self.model_info,
             "message": self.message,
         }
 
 
-def generate_embeddings(image_path: str) -> Dict[str, Any]:
+def generate_embeddings_v2(image_path: str) -> Dict[str, Any]:
     """
     Generate face embeddings for a given image path using DeepFace.
 
@@ -90,13 +94,13 @@ def generate_embeddings(image_path: str) -> Dict[str, Any]:
     try:
         # Validate input
         if not image_path or not isinstance(image_path, str):
-            raise EmbeddingValidationError(
-                EmbeddingCodes.FUNCTION_ERROR, "Invalid image path provided"
+            raise EmbeddingValidationErrorV2(
+                EmbeddingCodesV2.FUNCTION_ERROR, "Invalid image path provided"
             )
 
         if not os.path.exists(image_path):
-            raise EmbeddingValidationError(
-                EmbeddingCodes.FUNCTION_ERROR, f"Image file not found: {image_path}"
+            raise EmbeddingValidationErrorV2(
+                EmbeddingCodesV2.FUNCTION_ERROR, f"Image file not found: {image_path}"
             )
 
         # Configure embedding generation parameters
@@ -106,15 +110,18 @@ def generate_embeddings(image_path: str) -> Dict[str, Any]:
             "detector_backend": Settings.DETECTOR_BACKEND,
             "enforce_detection": True,  # Changed to True for better reliability
             "align": True,
-            "normalization": "base",
+            "normalization": "ArcFace",
+            "anti_spoofing": True,
         }
 
         # Attempt to generate embeddings
         embeddings = DeepFace.represent(**embedding_config)
 
+        logging.debug("Embeddings of v2: %s", embeddings)
+
         if not embeddings:
-            raise EmbeddingValidationError(
-                EmbeddingCodes.NO_FACE_DETECTED, EmbeddingMessages.NO_FACE_DETECTED
+            raise EmbeddingValidationErrorV2(
+                EmbeddingCodesV2.NO_FACE_DETECTED, EmbeddingMessagesV2.NO_FACE_DETECTED
             )
 
         # Handle different embedding return formats
@@ -135,8 +142,8 @@ def generate_embeddings(image_path: str) -> Dict[str, Any]:
                 not isinstance(embedding_vector, (list, np.ndarray))
                 or len(embedding_vector) == 0
             ):
-                raise EmbeddingValidationError(
-                    EmbeddingCodes.FUNCTION_ERROR,
+                raise EmbeddingValidationErrorV2(
+                    EmbeddingCodesV2.FUNCTION_ERROR,
                     "Invalid embedding format received from model",
                 )
 
@@ -148,23 +155,24 @@ def generate_embeddings(image_path: str) -> Dict[str, Any]:
         # Validate embedding dimensions
         expected_dim = expected_dims.get(Settings.FACE_RECOGNITION_MODEL)
         if expected_dim and len(processed_embeddings[0]) != expected_dim:
-            raise EmbeddingValidationError(
-                EmbeddingCodes.FUNCTION_ERROR,
+            raise EmbeddingValidationErrorV2(
+                EmbeddingCodesV2.FUNCTION_ERROR,
                 f"Unexpected embedding dimension: got {len(processed_embeddings[0])}, "
                 f"expected {expected_dim} for model {Settings.FACE_RECOGNITION_MODEL}",
             )
 
-        response = EmbeddingResponse(
-            code=EmbeddingCodes.SUCCESS,
+        response = EmbeddingResponseV2(
+            code=EmbeddingCodesV2.SUCCESS,
             embeddings=processed_embeddings,
             face_detected=True,
+            is_real=True,
             model_info={
                 "face_recognition_model": Settings.FACE_RECOGNITION_MODEL,
                 "face_detection_model": Settings.DETECTOR_BACKEND,
                 "embedding_dimension": len(processed_embeddings[0]),
                 "embeddings_count": len(processed_embeddings),
             },
-            message=EmbeddingMessages.SUCCESS,
+            message=EmbeddingMessagesV2.SUCCESS,
         )
 
         logging.info(
@@ -175,15 +183,52 @@ def generate_embeddings(image_path: str) -> Dict[str, Any]:
 
         return response.to_dict()
 
-    except EmbeddingError as e:
+    except EmbeddingErrorV2 as e:
         logging.warning(
             "Embedding generation failed: code=%d, message=%s", e.code, e.message
         )
-        return EmbeddingResponse(code=e.code, message=e.message).to_dict()
+        return EmbeddingResponseV2(code=e.code, message=e.message).to_dict()
 
     except Exception as e:
-        error_msg = f"Unexpected error in embedding generation: {str(e)}"
-        logging.error(error_msg, exc_info=True)
-        return EmbeddingResponse(
-            code=EmbeddingCodes.FUNCTION_ERROR, message=error_msg
+        error_msg = str(e)
+        logging.error(
+            f"Unexpected error in embedding generation: {error_msg}", exc_info=True
+        )
+
+        # Check if the error is related to face detection
+        if "Face could not be detected" in error_msg:
+            return EmbeddingResponseV2(
+                code=EmbeddingCodesV2.NO_FACE_DETECTED,
+                embeddings=None,
+                face_detected=False,
+                is_real=False,
+                model_info={
+                    "face_recognition_model": Settings.FACE_RECOGNITION_MODEL,
+                    "face_detection_model": Settings.DETECTOR_BACKEND,
+                    "embedding_dimension": None,
+                    "embeddings_count": 0,
+                },
+                message=EmbeddingMessagesV2.NO_FACE_DETECTED,
+            ).to_dict()
+
+        # Handle spoofing detection
+        elif "Spoof detected in the given image" in error_msg:
+            return EmbeddingResponseV2(
+                code=EmbeddingCodesV2.SPOOF_DETECTED,
+                embeddings=None,
+                face_detected=True,
+                is_real=False,
+                model_info={
+                    "face_recognition_model": Settings.FACE_RECOGNITION_MODEL,
+                    "face_detection_model": Settings.DETECTOR_BACKEND,
+                    "embedding_dimension": None,
+                    "embeddings_count": 0,
+                },
+                message=EmbeddingMessagesV2.SPOOF_DETECTED,
+            ).to_dict()
+
+        # Handle other unexpected errors
+        return EmbeddingResponseV2(
+            code=EmbeddingCodesV2.FUNCTION_ERROR,
+            message=f"Unexpected error in embedding generation: {error_msg}",
         ).to_dict()

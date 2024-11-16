@@ -6,10 +6,10 @@ from typing import Any, Dict, Optional, Tuple
 from flask import jsonify, Request
 
 from ..config import Settings
-from ..utils import process_face_image
+from ..utils import process_face_image_v2
 
 
-class AuthenticateCodes:
+class AuthenticateCodesV2:
     SUCCESS = 0
     FUNCTION_ERROR = 1
     NO_FACE_DETECTED = 2
@@ -20,7 +20,7 @@ class AuthenticateCodes:
     UNEXPECTED_ERROR = 7
 
 
-class AuthenticateMessages:
+class AuthenticateMessagesV2:
     SUCCESS = "Authentication completed successfully"
     FUNCTION_ERROR = "Unexpected error in authentication"
     NO_FACE_DETECTED = "No face detected"
@@ -31,7 +31,7 @@ class AuthenticateMessages:
     UNEXPECTED_ERROR = "Validation error"
 
 
-class AuthenticateError(Exception):
+class AuthenticateErrorV2(Exception):
     """Base exception for authentication errors"""
 
     def __init__(self, code: int, message: str):
@@ -40,14 +40,14 @@ class AuthenticateError(Exception):
         super().__init__(message)
 
 
-class AuthenticateValidationError(AuthenticateError):
+class AuthenticateValidationErrorV2(AuthenticateErrorV2):
     """Raised when validation fails"""
 
     pass
 
 
 @dataclass
-class AuthenticateResponse:
+class AuthenticateResponseV2:
     code: int
     message: Optional[str] = None
     match: Optional[dict] = None
@@ -66,7 +66,9 @@ class AuthenticateResponse:
         }
 
 
-def handle_authenticate_request(request: Request, pinecone_service) -> Tuple[Any, int]:
+def handle_authenticate_request_v2(
+    request: Request, pinecone_service
+) -> Tuple[Any, int]:
     """
     Endpoint to authenticate a face against enrolled faces.
 
@@ -95,13 +97,27 @@ def handle_authenticate_request(request: Request, pinecone_service) -> Tuple[Any
 
         # Process face image
         face_processing_start = time.time()
-        face_processing_task = process_face_image(image_file)
+        face_processing_task = process_face_image_v2(image_file)
+
+        # Map process_face_image_v2 codes to authenticate codes
+        code_mapping = {
+            0: AuthenticateCodesV2.SUCCESS,  # Success
+            1: AuthenticateCodesV2.FUNCTION_ERROR,  # Function Error
+            2: AuthenticateCodesV2.NO_FACE_DETECTED,  # No Face Detected
+            3: AuthenticateCodesV2.SPOOFING_DETECTED,  # Spoof Detected
+        }
 
         # Check for face processing errors
-        if face_processing_task["code"] != AuthenticateCodes.SUCCESS:
-            response = AuthenticateResponse(
-                code=face_processing_task["code"],
+        if face_processing_task["code"] != 0:  # Any non-success code
+            mapped_code = code_mapping.get(
+                face_processing_task["code"], AuthenticateCodesV2.UNEXPECTED_ERROR
+            )
+
+            response = AuthenticateResponseV2(
+                code=mapped_code,
                 message=face_processing_task["message"],
+                match=None,
+                similarity_score=None,
                 anti_spoofing=face_processing_task.get("anti_spoofing"),
                 details={
                     "processing_times": {
@@ -111,6 +127,7 @@ def handle_authenticate_request(request: Request, pinecone_service) -> Tuple[Any
                         ),
                         "vector_search": None,
                     },
+                    "face_detected": face_processing_task.get("face_detected", False),
                 },
             )
 
@@ -138,30 +155,30 @@ def handle_authenticate_request(request: Request, pinecone_service) -> Tuple[Any
         }
 
         # Handle different search result codes
-        if search_result["code"] == AuthenticateCodes.SUCCESS:
-            response = AuthenticateResponse(
-                code=AuthenticateCodes.SUCCESS,
-                message=AuthenticateMessages.SUCCESS,
+        if search_result["code"] == AuthenticateCodesV2.SUCCESS:
+            response = AuthenticateResponseV2(
+                code=AuthenticateCodesV2.SUCCESS,
+                message=AuthenticateMessagesV2.SUCCESS,
                 match=search_result["match"],
                 similarity_score=search_result["details"]["similarity_score"],
                 anti_spoofing=face_processing_task.get("anti_spoofing"),
                 details={"processing_times": processing_times},
             )
 
-        elif search_result["code"] == AuthenticateCodes.BELOW_THRESHOLD:
-            response = AuthenticateResponse(
-                code=AuthenticateCodes.BELOW_THRESHOLD,
-                message=AuthenticateMessages.BELOW_THRESHOLD,
+        elif search_result["code"] == AuthenticateCodesV2.BELOW_THRESHOLD:
+            response = AuthenticateResponseV2(
+                code=AuthenticateCodesV2.BELOW_THRESHOLD,
+                message=AuthenticateMessagesV2.BELOW_THRESHOLD,
                 match=None,
                 similarity_score=search_result["details"]["similarity_score"],
                 anti_spoofing=face_processing_task.get("anti_spoofing"),
                 details={"processing_times": processing_times},
             )
 
-        elif search_result["code"] == AuthenticateCodes.NO_MATCH:
-            response = AuthenticateResponse(
-                code=AuthenticateCodes.NO_MATCH,
-                message=AuthenticateMessages.NO_MATCH,
+        elif search_result["code"] == AuthenticateCodesV2.NO_MATCH:
+            response = AuthenticateResponseV2(
+                code=AuthenticateCodesV2.NO_MATCH,
+                message=AuthenticateMessagesV2.NO_MATCH,
                 match=None,
                 similarity_score=None,
                 anti_spoofing=face_processing_task.get("anti_spoofing"),
@@ -185,8 +202,8 @@ def handle_authenticate_request(request: Request, pinecone_service) -> Tuple[Any
     except ValueError as ve:
         error_msg = str(ve)
         logging.warning("Validation error during authentication: %s", error_msg)
-        response = AuthenticateResponse(
-            code=AuthenticateCodes.FUNCTION_ERROR,
+        response = AuthenticateResponseV2(
+            code=AuthenticateCodesV2.FUNCTION_ERROR,
             message=error_msg,
             details={
                 "error_type": "validation",
@@ -198,8 +215,8 @@ def handle_authenticate_request(request: Request, pinecone_service) -> Tuple[Any
     except RuntimeError as re:
         error_msg = str(re)
         logging.error("Runtime error during authentication: %s", error_msg)
-        response = AuthenticateResponse(
-            code=AuthenticateCodes.UNEXPECTED_ERROR,
+        response = AuthenticateResponseV2(
+            code=AuthenticateCodesV2.UNEXPECTED_ERROR,
             message=error_msg,
             details={
                 "error_type": "runtime",
@@ -211,8 +228,8 @@ def handle_authenticate_request(request: Request, pinecone_service) -> Tuple[Any
     except Exception as e:
         error_msg = f"Unexpected error during authentication: {str(e)}"
         logging.exception(error_msg)
-        response = AuthenticateResponse(
-            code=AuthenticateCodes.UNEXPECTED_ERROR,
+        response = AuthenticateResponseV2(
+            code=AuthenticateCodesV2.UNEXPECTED_ERROR,
             message=error_msg,
             details={
                 "error_type": "unexpected",

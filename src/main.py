@@ -40,7 +40,7 @@ def create_face_id_service(config_object=None):
 def main():
     """Run the application in development mode."""
     app = create_face_id_service()
-    app.run(host="0.0.0.0", port=8787, debug=False)
+    app.run(host="0.0.0.0", port=8787, debug=True)
 
 
 if __name__ == "__main__":
